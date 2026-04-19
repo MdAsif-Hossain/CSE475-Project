@@ -1,0 +1,553 @@
+=== CSE_475_Assignment_02_BYOL.ipynb === (26 cells)
+
+================================================================================
+CELL 0 [MARKDOWN]
+================================================================================
+# CSE 475 - Assignment 02
+## Group Information
+| Field | Details |
+|----------------------------|----------------------------------------------|
+| Group ID | Group XX |
+| Student 1 Name | Full Name |
+| Student 1 ID | 20XX-X-XX-XXX |
+| Student 2 Name | Full Name (if applicable) |
+| Student 2 ID | 20XX-X-XX-XXX (if applicable) |
+| Notebook Type | BYOL Notebook |
+| Backbone Used | EfficientNet-B3 (Example) |
+| Assignment 01 Best Acc | 87.3 % (EfficientNet-B3, 50 epochs) |
+| Dataset Name (Kaggle) | /kaggle/input/<your-dataset-name>/ |
+| Dataset Source | Rice Leaf Disease / Oxford Pet etc. |
+| Dataset Source Link | https://... |
+| Submission Date | DD Month 2026 |
+
+
+================================================================================
+CELL 1 [MARKDOWN]
+================================================================================
+## 2. Global Configuration
+
+
+================================================================================
+CELL 2 [CODE]
+================================================================================
+import torch
+
+# General Configuration
+SEED = 42
+BATCH_SIZE = 128 # May need to adjust based on Kaggle GPU limit
+NUM_EPOCHS = 100
+NUM_WORKERS = 2
+LR = 3e-4
+WEIGHT_DECAY = 1e-6
+
+# BYOL Architecture Config
+BACKBONE_NAME = 'efficientnet_b3' # Change if your best model was different
+EMBEDDING_DIM = 1536 # For target backbone (EfficientNet-B3 is 1536, ViT-S/16 is 384)
+PROJ_HIDDEN_DIM = 4096
+PROJ_OUT_DIM = 256
+PRED_HIDDEN_DIM = 4096
+
+# Data paths (Replace with your Kaggle Dataset Path)
+DATASET_PATH = '/kaggle/input/your-dataset-folder/dataset'
+BACKBONE_CHECKPOINT_PATH = '/kaggle/input/your-a01-model/model.pth' # Optional A01 init
+BYOL_SAVE_PATH = 'byol_backbone.pth'
+
+# EMA Update schedule setup
+TAU_START = 0.996
+TAU_END = 1.0
+
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(f"Using device: {DEVICE}")
+
+
+================================================================================
+CELL 3 [MARKDOWN]
+================================================================================
+## 3. Setup and Imports
+
+
+================================================================================
+CELL 4 [CODE]
+================================================================================
+import os
+import random
+import numpy as np
+import copy
+import matplotlib.pyplot as plt
+import seaborn as sns
+from tqdm import tqdm
+from PIL import Image
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader
+from torch.optim import SGD, AdamW
+from torch.optim.lr_scheduler import CosineAnnealingLR
+import torchvision.transforms as T
+import torchvision.models as models
+from torchvision.datasets import ImageFolder
+from sklearn.metrics import accuracy_score, f1_score, confusion_matrix
+
+# Determine reproducibility
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(SEED)
+
+
+================================================================================
+CELL 5 [MARKDOWN]
+================================================================================
+## 4. Task 1 — Dataset EDA and Augmentation Visualisation
+
+
+================================================================================
+CELL 6 [CODE]
+================================================================================
+# --- EDA ---
+# Display class distribution (Assumes ImageFolder structure)
+
+def plot_class_distribution(data_dir):
+    classes = [d for d in os.listdir(data_dir) if os.path.isdir(os.path.join(data_dir, d))]
+    counts = [len(os.listdir(os.path.join(data_dir, c))) for c in classes]
+    
+    plt.figure(figsize=(10,6))
+    sns.barplot(x=classes, y=counts)
+    plt.title("Class Distribution")
+    plt.xticks(rotation=45)
+    plt.show()
+
+# plot_class_distribution(DATASET_PATH) # Uncomment in Kaggle
+
+
+================================================================================
+CELL 7 [CODE]
+================================================================================
+# --- Dataset Splits ---
+class SSLDatasetWrapper(Dataset):
+    "Wrapper to discard labels for the 80% Unlabeled pool"
+    def __init__(self, subset, transform=None):
+        self.subset = subset
+        self.transform = transform
+        
+    def __len__(self):
+        return len(self.subset)
+        
+    def __getitem__(self, idx):
+        img, _label = self.subset[idx] # Deliberately drop label
+        if self.transform:
+            return self.transform(img)
+        return img
+
+# In Kaggle:
+# full_dataset = ImageFolder(DATASET_PATH)
+# total = len(full_dataset)
+# train_ssl_len = int(0.8 * total)
+# train_lbl_len = int(0.1 * total)
+# test_len = total - train_ssl_len - train_lbl_len
+#
+# ssl_subset, lbl_subset, test_subset = torch.utils.data.random_split(
+#     full_dataset, [train_ssl_len, train_lbl_len, test_len], 
+#     generator=torch.Generator().manual_seed(SEED)
+# )
+
+
+
+================================================================================
+CELL 8 [CODE]
+================================================================================
+# --- BYOL Augmentation Pipeline ---
+class BYOLAugmentation:
+    def __init__(self, image_size=224):
+        color_jitter = T.ColorJitter(0.4, 0.4, 0.2, 0.1)
+        self.transform = T.Compose([
+            T.RandomResizedCrop(image_size, scale=(0.08, 1.0)),
+            T.RandomHorizontalFlip(p=0.5),
+            T.RandomApply([color_jitter], p=0.8),
+            T.RandomGrayscale(p=0.2),
+            T.GaussianBlur(kernel_size=int(0.1 * image_size) // 2 * 2 + 1, sigma=(0.1, 2.0)),
+            T.ToTensor(),
+            T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
+
+    def __call__(self, x):
+        return self.transform(x), self.transform(x)
+
+# --- Visualization grid --- 
+# (Load ONE image and plot 16 generated views)
+def visualize_augmentations(img_path, num_views=16):
+    img = Image.open(img_path).convert('RGB')
+    aug = T.Compose([
+        T.RandomResizedCrop(224, scale=(0.08, 1.0)),
+        T.RandomHorizontalFlip(p=0.5),
+        T.RandomApply([T.ColorJitter(0.4, 0.4, 0.2, 0.1)], p=0.8),
+        T.RandomGrayscale(p=0.2),
+        T.GaussianBlur(kernel_size=23, sigma=(0.1, 2.0)),
+    ])
+    
+    fig, axes = plt.subplots(4, 4, figsize=(10, 10))
+    for ax in axes.flatten():
+        view = aug(img)
+        ax.imshow(view)
+        ax.axis('off')
+    plt.suptitle("BYOL Augmented Views", fontsize=16)
+    plt.tight_layout()
+    plt.show()
+
+
+================================================================================
+CELL 9 [MARKDOWN]
+================================================================================
+## 5. Task 2 — BYOL: Model Definition
+
+
+================================================================================
+CELL 10 [CODE]
+================================================================================
+class MLPHead(nn.Module):
+    def __init__(self, in_dim, hidden_dim, out_dim):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, out_dim)
+        )
+    def forward(self, x):
+        return self.net(x)
+
+class BYOLPredictor(nn.Module):
+    def __init__(self, in_dim, hidden_dim, out_dim):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, out_dim)
+        )
+    def forward(self, x):
+        return self.net(x)
+
+class BYOL(nn.Module):
+    def __init__(self, backbone, embed_dim, proj_hidden_dim=4096, proj_out_dim=256, pred_hidden_dim=4096):
+        super().__init__()
+        
+        # Online Network
+        self.online_backbone = backbone
+        self.online_projector = MLPHead(embed_dim, proj_hidden_dim, proj_out_dim)
+        self.online_predictor = BYOLPredictor(proj_out_dim, pred_hidden_dim, proj_out_dim)
+        
+        # Target Network
+        self.target_backbone = copy.deepcopy(self.online_backbone)
+        self.target_projector = copy.deepcopy(self.online_projector)
+        
+        # Freeze target network
+        for param in self.target_backbone.parameters(): param.requires_grad = False
+        for param in self.target_projector.parameters(): param.requires_grad = False
+
+    def get_target_network_parameters(self):
+        return list(self.target_backbone.parameters()) + list(self.target_projector.parameters())
+
+    def get_online_network_parameters(self):
+        return list(self.online_backbone.parameters()) + list(self.online_projector.parameters())
+
+    @torch.no_grad()
+    def update_target_network(self, tau):
+        for online_p, target_p in zip(self.get_online_network_parameters(), self.get_target_network_parameters()):
+            target_p.data = tau * target_p.data + (1.0 - tau) * online_p.data
+
+    def forward(self, v1, v2):
+        # Online forward
+        z1_o = self.online_projector(self.online_backbone(v1))
+        z2_o = self.online_projector(self.online_backbone(v2))
+        p1 = self.online_predictor(z1_o)
+        p2 = self.online_predictor(z2_o)
+        
+        # Target forward
+        with torch.no_grad():
+            z1_t = self.target_projector(self.target_backbone(v1))
+            z2_t = self.target_projector(self.target_backbone(v2))
+            
+        return p1, p2, z1_t.detach(), z2_t.detach()
+
+def byol_loss_fn(p, z):
+    # Normalize
+    p = F.normalize(p, dim=-1, p=2)
+    z = F.normalize(z, dim=-1, p=2)
+    # Cosine similarity -> minimize negative cosine similarity
+    return 2 - 2 * (p * z).sum(dim=-1).mean()
+
+
+
+================================================================================
+CELL 11 [CODE]
+================================================================================
+# Helper logic to extract feature vectors (removing classification heads)
+def build_backbone(name='efficientnet_b3'):
+    if name == 'efficientnet_b3':
+        model = models.efficientnet_b3(pretrained=True)
+        # Strip classifier
+        model.classifier = nn.Identity()
+    elif name == 'mobilenet_v3_large':
+        model = models.mobilenet_v3_large(pretrained=True)
+        model.classifier = nn.Identity()
+    # Add ViT logic if needed
+    return model
+
+# instantiate
+backbone = build_backbone(BACKBONE_NAME)
+byol_model = BYOL(backbone, EMBEDDING_DIM).to(DEVICE)
+optimizer = AdamW(byol_model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
+
+
+
+================================================================================
+CELL 12 [MARKDOWN]
+================================================================================
+## 6. Task 2 — BYOL: Pre-Training Loop
+
+
+================================================================================
+CELL 13 [CODE]
+================================================================================
+import math
+
+def get_tau(epoch, total_epochs, base_tau=0.996):
+    # Cosine schedule for EMA tau
+    return 1 - (1 - base_tau) * (math.cos(math.pi * epoch / total_epochs) + 1) / 2
+
+history_loss = []
+
+# Assuming dataloader is defined
+# dataloader = DataLoader(ssl_subset_wrapped, batch_size=BATCH_SIZE, shuffle=True, drop_last=True)
+
+# Training loop
+for epoch in range(NUM_EPOCHS):
+    byol_model.train()
+    running_loss = 0.0
+    
+    # Calculate tau for this epoch
+    current_tau = get_tau(epoch, NUM_EPOCHS, TAU_START)
+    
+    # FOR DRY RUN (Replace with real dataloader)
+    # for v1, v2 in dataloader:
+    
+    # Dummy tensors for testing compilation (REMOVE in Kaggle run!)
+    v1 = torch.randn(2, 3, 224, 224).to(DEVICE)
+    v2 = torch.randn(2, 3, 224, 224).to(DEVICE)
+    
+    for _ in range(1): # Dummy loop
+        
+        v1, v2 = v1.to(DEVICE), v2.to(DEVICE)
+        
+        p1, p2, z1_t, z2_t = byol_model(v1, v2)
+        
+        # Symmetric Loss
+        loss = byol_loss_fn(p1, z2_t) + byol_loss_fn(p2, z1_t)
+        
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        
+        byol_model.update_target_network(current_tau)
+        
+        running_loss += loss.item()
+        
+    avg_loss = running_loss # / len(dataloader)
+    history_loss.append(avg_loss)
+    
+    if (epoch+1) % 10 == 0:
+        print(f"Epoch [{epoch+1}/{NUM_EPOCHS}], Loss: {avg_loss:.4f}, Tau: {current_tau:.5f}")
+
+# Save the backbone
+torch.save(byol_model.online_backbone.state_dict(), BYOL_SAVE_PATH)
+print(f"Backbone saved to {BYOL_SAVE_PATH}")
+
+
+
+================================================================================
+CELL 14 [MARKDOWN]
+================================================================================
+## 7. Task 2 — BYOL: Training Curve
+
+
+================================================================================
+CELL 15 [CODE]
+================================================================================
+plt.figure(figsize=(8,5))
+plt.plot(range(1, NUM_EPOCHS+1), history_loss, marker='o', label='BYOL Loss')
+plt.title('BYOL Pre-Training Loss Curve')
+plt.xlabel('Epochs')
+plt.ylabel('Symmetric Negative Cosine Similarity')
+plt.grid(True)
+plt.legend()
+plt.show()
+
+
+================================================================================
+CELL 16 [MARKDOWN]
+================================================================================
+## 8. Task 4 — Linear Probing with BYOL Backbone
+
+
+================================================================================
+CELL 17 [CODE]
+================================================================================
+# Evaluate using frozen backbone
+
+class LinearProbe(nn.Module):
+    def __init__(self, backbone, embed_dim, num_classes):
+        super().__init__()
+        self.backbone = backbone
+        
+        # Freeze backbone
+        for param in self.backbone.parameters():
+            param.requires_grad = False
+            
+        self.fc = nn.Linear(embed_dim, num_classes)
+        
+    def forward(self, x):
+        with torch.no_grad():
+            features = self.backbone(x)
+        return self.fc(features)
+
+# Usage:
+# NUM_CLASSES = 10 # Adjust to your dataset
+# probe_model = LinearProbe(byol_model.online_backbone, EMBEDDING_DIM, NUM_CLASSES).to(DEVICE)
+# probe_optimizer = SGD(probe_model.fc.parameters(), lr=0.01, momentum=0.9)
+# criterion = nn.CrossEntropyLoss()
+
+# Training loop over lbl_subset...
+
+
+
+================================================================================
+CELL 18 [MARKDOWN]
+================================================================================
+## 9. Task 4 — k-NN Evaluation with BYOL Backbone
+
+
+================================================================================
+CELL 19 [CODE]
+================================================================================
+# Extract normalized embeddings for train and test pools
+# Calculate cosine similarity matrices and do majority voting
+def k_nn_evaluate(train_features, train_labels, test_features, test_labels, k_values=[1, 5, 10, 20, 50, 200]):
+    # features shape: (N, D), labels: (N,)
+    # Normalize
+    train_features = F.normalize(train_features, p=2, dim=1)
+    test_features = F.normalize(test_features, p=2, dim=1)
+    
+    # Cosine sim (Test_N, Train_N)
+    sim_matrix = torch.mm(test_features, train_features.t())
+    
+    accuracies = {}
+    for k in k_values:
+        topk_sim, topk_indices = sim_matrix.topk(k, dim=1)
+        topk_labels = train_labels[topk_indices]
+        
+        # majority vote
+        preds = torch.mode(topk_labels, dim=1).values
+        acc = (preds == test_labels).float().mean().item()
+        accuracies[k] = acc
+        print(f"k-NN (k={k}) Accuracy: {acc*100:.2f}%")
+        
+    return accuracies
+
+
+
+================================================================================
+CELL 20 [MARKDOWN]
+================================================================================
+## 9.5 Extra — Feature Space Visualization (t-SNE) For The Paper
+
+================================================================================
+CELL 21 [CODE]
+================================================================================
+from sklearn.manifold import TSNE
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+def visualize_tsne(features, labels, class_names):
+    """
+    Computes and plots the t-SNE 2D projection of the model's feature space.
+    This demonstrates class separability achieved by SSL.
+    """
+    # features shape: (N, D), labels shape: (N,)
+    tsne = TSNE(n_components=2, perplexity=30, random_state=SEED)
+    tsne_results = tsne.fit_transform(features.cpu().numpy())
+    
+    plt.figure(figsize=(10, 8))
+    sns.scatterplot(
+        x=tsne_results[:, 0], 
+        y=tsne_results[:, 1],
+        hue=[class_names[l] for l in labels.cpu().numpy()],
+        palette=sns.color_palette("husl", len(class_names)),
+        legend="full",
+        alpha=0.7
+    )
+    plt.title('t-SNE Visualization of BYOL Embeddings', fontsize=14, fontweight='bold')
+    plt.xlabel('t-SNE Dimension 1')
+    plt.ylabel('t-SNE Dimension 2')
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.tight_layout()
+    plt.show()
+
+# Usage (Uncomment and pass actual tensors to use):
+# visualize_tsne(test_features, test_labels, class_names=['Bougainvillea', 'Crown of thorns', 'Hibiscus', 'Jungle geranium', 'Madagascar periwinkle', 'Marigold', 'Rose'])
+
+================================================================================
+CELL 22 [MARKDOWN]
+================================================================================
+## 10. Task 5 — Ablation Study
+
+
+================================================================================
+CELL 23 [CODE]
+================================================================================
+# Example: Label Fraction Study 
+# (Train linear probes using subsets of the 10% labeled pool [1%, 5%, 10%, 50%])
+
+import matplotlib.pyplot as plt
+
+def plot_label_efficiency_curve(fractions, accuracies_supervised, accuracies_ssl):
+    """
+    Plots the data scarcity label efficiency curve for the paper.
+    """
+    plt.figure(figsize=(8, 6))
+    plt.plot(fractions, accuracies_supervised, marker='o', linestyle='--', color='#E74C3C', label='Supervised Baseline')
+    plt.plot(fractions, accuracies_ssl, marker='s', linestyle='-', color='#27AE60', label='BYOL (Ours)')
+    plt.xscale('log')
+    plt.xticks(fractions, [f"{int(f*100)}%" for f in fractions])
+    plt.xlabel('Fraction of Labeled Data')
+    plt.ylabel('Linear Probe Top-1 Accuracy (%)')
+    plt.title('Data Scarcity: Label Efficiency of BYOL vs Supervised')
+    plt.grid(True, which="both", ls="--", alpha=0.5)
+    plt.legend()
+    plt.show()
+
+# Example Usage (Replace with actual evaluated accuracies from your linear probes):
+# fractions = [0.01, 0.05, 0.10, 0.50]
+# dummy_supervised_acc = [25.0, 45.0, 60.0, 80.0]
+# dummy_ssl_acc = [55.0, 70.0, 78.0, 85.0]
+# plot_label_efficiency_curve(fractions, dummy_supervised_acc, dummy_ssl_acc)
+
+================================================================================
+CELL 24 [MARKDOWN]
+================================================================================
+## 11. Conclusion
+Summarize findings from Notebook 1 here.
+
+
+================================================================================
+CELL 25 [MARKDOWN]
+================================================================================
+## 12. References
+- J.-B. Grill et al., “Bootstrap Your Own Latent: A New Approach to Self-Supervised Learning,” NeurIPS 2020.
+
+
