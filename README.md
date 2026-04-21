@@ -22,7 +22,7 @@ The primary visual data repository heavily utilized throughout this research is 
 
 ### 1.1 Class Distribution
 <div align="center">
-  <img src="CSE475_Assignment2_Report/Class%20distribution%20plot%20for%20the%20Tropical%20Flowers%20dataset.png" width="75%" alt="Class distribution plot">
+  <img src="assets/Class%20distribution%20plot%20for%20the%20Tropical%20Flowers%20dataset.png" width="75%" alt="Class distribution plot">
   <br>
   <em>Figure 1: Class distribution mapping for the Tropical Flowers dataset.</em>
 </div>
@@ -31,7 +31,7 @@ The primary visual data repository heavily utilized throughout this research is 
 The foundation of joint-embedding architectures rests unequivocally on generating highly variable, asymmetrical spatial augmentations per inference step. The pipeline incorporates Color Jittering, Gaussian Blurs, Solarization, and Random Resized crops.
 
 <div align="center">
-  <img src="CSE475_Assignment2_Report/Augmentation%20visualization%20grid%20with%2016%20generated%20views.png" width="75%" alt="Augmentation Multi-Crop Grid">
+  <img src="assets/Augmentation%20visualization%20grid%20with%2016%20generated%20views.png" width="75%" alt="Augmentation Multi-Crop Grid">
   <br>
   <em>Figure 2: Representation of 16 asymmetrical augmentation generation views applied prior to latency embedding.</em>
 </div>
@@ -46,7 +46,7 @@ At the core of this system, all ResNeXt backbones were purposefully rejected (du
 BYOL adapts to symmetric negative cosine similarity computations using an asymmetric dual architecture (Online vs. Target). The target network ignores standard back-propagation and updates gradually acting as an Exponential Moving Average (EMA).
 
 <div align="center">
-  <img src="CSE475_Assignment2_Report/BYOL%20training%20loss%20curve..png" width="75%" alt="BYOL Training Curve">
+  <img src="assets/BYOL%20training%20loss%20curve..png" width="75%" alt="BYOL Training Curve">
   <br>
   <em>Figure 3: Sustained steady state convergence inside strict BYOL hardware temporal bounding bounds.</em>
 </div>
@@ -55,7 +55,7 @@ BYOL adapts to symmetric negative cosine similarity computations using an asymme
 DINO reimplements distribution tracking by intertwining rigidly maintained running-mean centering vectors operating heavily alongside oscillating cosine weight decaying behaviors. Its structural ingenuity originates predominantly through recursive multi-crop geometrical asymmetry.
 
 <div align="center">
-  <img src="CSE475_Assignment2_Report/Images/dino_training_dynamics.png.png" width="75%" alt="DINO Training Dynamics">
+  <img src="assets/dino_training_dynamics.png.png" width="75%" alt="DINO Training Dynamics">
   <br>
   <em>Figure 4: DINO loss mapping optimizing cross-entropy distillation environments natively mapped out to ~65,536 dimensional bounds.</em>
 </div>
@@ -64,7 +64,7 @@ DINO reimplements distribution tracking by intertwining rigidly maintained runni
 Even though bounding boxes were completely absent during dataset loading, examining localized spatial activation targets successfully captures object geometry seamlessly separating specific botanical petals dynamically from external backgrounds.
 
 <div align="center">
-  <img src="CSE475_Assignment2_Report/Images/Fig-5%20dino_attention_maps.png" width="90%" alt="DINO Implicit Semantic Overlays">
+  <img src="assets/Fig-5%20dino_attention_maps.png" width="90%" alt="DINO Implicit Semantic Overlays">
   <br>
   <em>Figure 5: Grad-Cam equivalent Self-Attention Maps generated internally identifying morphological botanical attributes implicitly.</em>
 </div>
@@ -90,7 +90,7 @@ Crucial determinating mechanisms assess the latent capabilities of frozen parame
 To justify the minimal annotation limit of the linear probe pipeline, a massive reduction testing structure was executed, severely decaying label representations across $1.0\%, 5\%, 10\%$, and $50\%$ density blocks.
 
 <div align="center">
-  <img src="CSE475_Assignment2_Report/Images/Fig-6%20ablation_label_fraction.png" width="75%" alt="Ablation Density Bounds">
+  <img src="assets/Fig-6%20ablation_label_fraction.png" width="75%" alt="Ablation Density Bounds">
   <br>
   <em>Figure 6: Density limits representing accuracy limits completely absent major bounding targets.</em>
 </div>
