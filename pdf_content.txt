@@ -1,0 +1,487 @@
+CSE 475·Machine Learning & Computer Vision Dr. Md Rifat Ahmmad Rashid
+East West University
+Department of Computer Science & Engineering
+Lab Assignment 02
+Self-Supervised Learning for Image Classification — BYOL & DINO
+CourseCSE 475: Machine Learning & Computer Vision
+Instructor Dr. Md Rifat Ahmmad Rashid, Associate Professor, EWU
+Total Marks 100 | Kaggle Notebook (55) + Written Report (45)
+Deadline As announced on Google Classroom
+Restriction ResNeXt architecture is NOT permitted
+Assignment Overview
+Purpose and Motivation
+InAssignment01youtrainedCNNandTransformer-basedmodels—MobileNetV3, EfficientNet-
+B3, ResNeXt-50, ViT, Swin, and DeiT—on your group’s assigned image dataset using fully
+supervised learning. While powerful, supervised learning has a fundamental bottleneck: acquir-
+ing large-scale, accurately labelled data is expensive, time-consuming, and impractical in many
+real-world domains such as medical imaging, satellite analysis, and industrial inspection.
+Assignment02addressesthislimitationbyintroducingSelf-SupervisedLearning(SSL)—
+a paradigm that learns rich visual representations fromunlabelleddata by constructing auxiliary
+tasks from the data itself. You will implement and evaluate two state-of-the-art SSL frameworks:
+• BYOLBootstrap Your Own Latent(Grill et al., NeurIPS 2020) — a non-contrastive
+teacher–student approach that learns without negative pairs.
+• DINOSelf-DistillationwithNoLabels(Caronetal., ICCV2021)—aself-distillation
+framework using a cross-entropy objective and a multi-crop augmentation strategy.
+By completing this assignment you will:
+1. Understand the theoretical foundations and architectural designs of BYOL and DINO.
+2. Implement both frameworks on the Kaggle platform using the backbone from your best-
+performing Assignment 01 model.
+3. Performlinear probingandk-NN evaluationto measure representation quality without fine-
+tuning.
+4. Compare SSL performance against your Assignment 01 supervised baselines.
+5. Produce a structured, professional lab report documenting every phase of the experiment.
+East West University1Lab Assignment 02CSE 475·Machine Learning & Computer Vision Dr. Md Rifat Ahmmad Rashid
+Connection to Assignment 01
+How Assignment 02 Builds on Assignment 01
+•Same dataset.You must use theexact same assigned datasetfrom Assignment 01. No
+new datasets are permitted.
+•Best model as backbone.Identify the single model that achieved the highest test
+accuracy in Assignment 01 (CNN or Transformer). Extract its backbone (feature-
+extraction layers only, excluding the classification head) and use it as the encoder for
+both BYOL and DINO pre-training.
+•ResNeXt is excluded.Even if ResNeXt-50 was your best-performing CNN in Assign-
+ment 01, youmust notuse it as the SSL backbone in this assignment. See Section 1.3
+for full details and permitted alternatives.
+•Unlabelled pre-training protocol.During SSL pre-training, you mustdiscard all
+labels. Labels may only be reintroduced during linear probing and k-NN evaluation.
+•Supervised baselines.The best CNN and Transformer accuracy figures from Assign-
+ment 01 serve as the performance reference for comparison in Task 4.
+•Same Kaggle dataset.Re-use your group’s uploaded Kaggle dataset from Assignment
+01 as the data source.
+Architecture Restriction: ResNeXt is Not Permitted
+IMPORTANT NOTE
+You may NOT use the ResNeXt-50 (or any ResNeXt variant) architecture as
+the backbone for SSL pre-training in this assignment.
+This restriction applies regardless of whether ResNeXt achieved the best accuracy in As-
+signment 01. The rationale is two-fold:
+1. ResNeXt’s grouped convolution design interacts poorly with the very small effective
+batch sizes that arise when BYOL/DINO use multi-crop augmentation, leading to un-
+stable batch-normalisation statistics.
+2. The assignment is designed to explore SSL on architectures you have not yet deeply
+analysed in Assignment 01—particularly EfficientNet and Vision Transformers.
+If ResNeXt was your Assignment 01 top model, select thesecond-bestmodel from
+your results table and use that backbone instead. Permitted backbone choices are listed in
+Section 1.4.
+Permitted Backbone Choices
+The table below lists all permitted backbone encoders. Choose the one corresponding to your
+best-performing non-ResNeXt modelfrom Assignment 01.
+East West University2Lab Assignment 02CSE 475·Machine Learning & Computer Vision Dr. Md Rifat Ahmmad Rashid
+Category Backbone Embedding Dim Notes
+CNN MobileNetV3-Large 960 Lightweight; suitable for limited GPU RAM
+CNN EfficientNet-B3 1536 Strong baseline; recommended for CNN track
+ViT ViT-S/16 384 Recommended for DINO; native to SSL
+ViT Swin-T 768 Hierarchical ViT; good transfer features
+ViT DeiT-S 384 Distilled ViT; efficient and stable
+ResNeXt-50 and all ResNeXt variants — PROHIBITED
+Selection Rule
+1. Look up your Assignment 01 results table.
+2. Find the model with the highest test accuracy that isnota ResNeXt variant.
+3. Use that model’s backbone (without its classification head) for both BYOL and DINO.
+4. State your chosen backbone explicitly in theGlobal Configurationcell of your notebook
+and justify the choice in your written report.
+East West University3Lab Assignment 02CSE 475·Machine Learning & Computer Vision Dr. Md Rifat Ahmmad Rashid
+Theoretical Background
+Self-Supervised Learning — Core Concepts
+Self-supervised learning createspseudo-supervisionautomatically from the input data. For vi-
+sion, the most successful family of methods usesjoint-embedding architectures: two views
+of the same image are encoded and the model is trained so that the embeddings are similar
+irrespective of the augmentation applied.
+Data Augmentation Views
+Both BYOL and DINO rely on augmentation to create diverse views of the same image. Each
+view is generated by randomly composing:
+Augmentation Parameters
+Random Resized Crop Area[0.08,1.0]; resized to224×224
+Horizontal Flip p= 0.5
+Colour Jitter Brightness, contrast, saturation, hue
+Grayscale p= 0.2
+Gaussian Blur σ∈[0.1,2.0]
+Solarization (DINO) Invert pixels above threshold,p= 0.2
+BYOL — Bootstrap Your Own Latent
+Architecture
+BYOL uses two networks sharing the same backbone but with different update rules:
+•Online networkf θ: backbone→projector MLP→predictor MLP. Updated by gradient
+descent.
+•Targetnetworkf ξ: backbone→projectorMLP(nopredictor). UpdatedviaExponential
+Moving Average (EMA):
+ξ←τ ξ+ (1−τ)θ, τ∈[0.996,1.0]
+Loss Function
+Given two augmented viewsv1, v2 of the same imagex:
+LBYOL =− 1
+2
+ qθ(v1)·z ξ(v2)
+∥qθ(v1)∥ ∥zξ(v2)∥ + qθ(v2)·z ξ(v1)
+∥qθ(v2)∥ ∥zξ(v1)∥
+
+The predictor and EMA target together prevent representational collapse without requiring neg-
+ative pairs.
+DINO — Self-Distillation with No Labels
+Architecture
+DINO uses a teacher–student structure where the teacher is an EMA copy of the student:
+θt ←λ θ t + (1−λ)θ s, λfollows a cosine schedule.
+East West University4Lab Assignment 02CSE 475·Machine Learning & Computer Vision Dr. Md Rifat Ahmmad Rashid
+Multi-Crop Strategy
+DINO generates multiple views per image:
+•2 global cropsat224×224(seen by teacher and student).
+•6–10 local cropsat96×96(seen only by student).
+This asymmetric strategy forces the student to map local context to global semantics.
+Loss Function
+LDINO =−
+X
+x∈Vg
+X
+x′∈V
+x′̸=x
+Pt(x) logP s(x′)
+whereP t andP s are the teacher and student softmax distributions with temperaturesτt < τ s.
+A running-mean centering vectorcprevents collapse.
+Evaluation Protocols
+Protocol Description
+Linear Probing Freeze the pre-trained backbone. Train a singlenn.Linearlayer
+on labelled data. Strong accuracy indicates linearly separable
+features.
+k-NN Classification Extract normalised embeddings for all training images. Classify
+test images by majority vote among theknearest neighbours.
+No additional training needed.
+Attention Visualisation (DINO only) Overlay self-attention maps from the last ViT block
+on input images to verify semantic grounding.
+East West University5Lab Assignment 02CSE 475·Machine Learning & Computer Vision Dr. Md Rifat Ahmmad Rashid
+Tasks and Deliverables
+Task 1 — Dataset Preparation and EDA(10 marks)
+Task 1: Dataset Preparation and EDA
+1.Reloadyour Assignment 01 Kaggle dataset. Display the class distribution as a bar
+chart.
+2.Splitthe data into:
+•80%— unlabelled SSL pre-training pool (labels discarded).
+•10%— labelled linear probe / k-NN training set.
+•10%— held-out test set.
+3.Confirm label removal: print the shape of the unlabelled pool and assert that no
+label tensor is passed to the SSL dataloader.
+4.Visualiseat least 16 augmented views of a single image, showing the effect of random
+crop, colour jitter, Gaussian blur, and solarization.
+5.Report: number of images per split, per-channel mean and standard deviation, and
+class balance in the labelled split.
+Report Section: Dataset and Preprocessing (≈300–400 words)
+Include: class distribution plot, augmentation visualisation grid (16 views), split statistics
+table, and a brief justification of the 80/10/10 strategy.
+Task 2 — BYOL Pre-Training(25 marks)
+East West University6Lab Assignment 02CSE 475·Machine Learning & Computer Vision Dr. Md Rifat Ahmmad Rashid
+Task 2: BYOL Implementation and Pre-Training
+Backbone requirement (read carefully):
+IMPORTANT NOTE
+Use the backbone of yourbest-performing non-ResNeXt modelfrom Assignment
+01 (see Section 1.4).ResNeXt is prohibited.Initialise the backbone weights from
+your saved Assignment 01 checkpoint, then replace the classification head with the
+BYOL projector and predictor.
+1. Implement the BYOL online and target networks with the following heads:
+•Projector MLP: 3 layers, BatchNorm, hidden dim= 4096, output dim= 256.
+•Predictor MLP: 2 layers, BatchNorm, hidden dim= 4096, output dim= 256.
+•EMA schedule:τfrom0.996→1.0(cosine).
+2. Use AdamW optimiser (lr= 3×10 −4, weight decay= 1×10 −6).
+3. Pre-train for a minimum of100 epochson the unlabelled pool.
+4. Plot and log the BYOL loss curve (epoch vs. loss).
+5. Save backbone weights asbyol_backbone.pth.
+Starter Code — BYOL Training Loop
+1# -- BYOL TRAINING LOOP ( p s e u d o c o d e )
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+2# NOTE : ResNeXt is NOT a valid choice for ’ backbone ’. Use your best A01 model
+3# ( MobileNetV3 , EfficientNet - B3 , ViT -S , Swin -T , or DeiT - S ) .
+4
+5for epoch in range ( N U M _ E P O C H S ) :
+6for images in u n l a b e l l e d _ l o a d e r :# labels are NEVER loaded here
+7v1 = a u g m e n t _ v i e w ( images )# au gme nt ed view 1
+8v2 = a u g m e n t _ v i e w ( images )# au gme nt ed view 2
+9
+10# Online forward
+11z1 = o n l i n e _ p r o j e c t o r ( o n l i n e _ b a c k b o n e ( v1 ) )
+12z2 = o n l i n e _ p r o j e c t o r ( o n l i n e _ b a c k b o n e ( v2 ) )
+13p1 = o n l i n e _ p r e d i c t o r ( z1 )
+14p2 = o n l i n e _ p r e d i c t o r ( z2 )
+15
+16# Target forward ( stop gradient )
+17with torch . no_grad () :
+18zt1 = t a r g e t _ p r o j e c t o r ( t a r g e t _ b a c k b o n e ( v1 ) )
+19zt2 = t a r g e t _ p r o j e c t o r ( t a r g e t _ b a c k b o n e ( v2 ) )
+20
+21# Sy mm et ri c negative cosine s i m i l a r i t y loss
+22loss = byo l_ lo ss ( p1 , zt2 ) + b yo l_l os s ( p2 , zt1 )
+23
+24o pti mi ze r . ze ro_ gr ad ()
+25loss . backward ()
+26o pti mi ze r . step ()
+27
+28# EMA update ( online -> target )
+29e m a _ u p d a t e ( online_params , target_params , tau = t a u _ s c h e d u l e [ epoch ])
+East West University7Lab Assignment 02CSE 475·Machine Learning & Computer Vision Dr. Md Rifat Ahmmad Rashid
+Report Section: BYOL (≈400–500 words)
+Include: architecture diagram or pseudocode, hyperparameter table, loss curve plot, back-
+bone choice justification, training time, and convergence analysis.
+Task 3 — DINO Pre-Training(25 marks)
+Task 3: DINO Implementation and Pre-Training
+Backbone requirement (read carefully):
+IMPORTANT NOTE
+Use thesame backbonechosen in Task 2. If your best model was a CNN (e.g.
+EfficientNet-B3), you may use it for DINO by treating it as a plain encoder; a ViT-S/16
+backbone is strongly recommended for DINO because the multi-head self-attention
+maps it produces enable the attention visualisation in Task 3, step 6.ResNeXt
+remains prohibited.
+1. Implement DINO with:
+•Projection head: 3-layer MLP,ℓ 2-normalised, output dim= 65 536.
+•Multi-crop: 2 global views at224×224, 6 local views at96×96.
+•Teacher EMA:λfrom0.996→1.0(cosine).
+•Centering: running-mean vector, momentum= 0.9.
+•Temperatures:τ s = 0.1;τ t warmup from0.04→0.07.
+2. Use AdamW (lr= 5×10 −4, weight decay cosine from0.04→0.4).
+3. Pre-train for a minimum of100 epochson the unlabelled pool.
+4. Plot and log the DINO loss curve.
+5. Visualise DINO self-attention maps for at least5 test images, overlaying the last-block
+attention on the original image.
+6. Save backbone weights asdino_backbone.pth.
+Starter Code — DINO Training Loop
+1# -- DINO TRAINING LOOP ( p s e u d o c o d e )
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+2# NOTE : ResNeXt is NOT pe rm itt ed . R e c o m m e n d e d : ViT - S /16 or EfficientNet - B3 .
+3
+4for epoch in range ( N U M _ E P O C H S ) :
+5for images in u n l a b e l l e d _ l o a d e r :# labels are NEVER loaded here
+6# Multi - crop a u g m e n t a t i o n
+7g l o b a l _ c r o p s = [ g l o b a l _ a u g ( images ) , g l o b a l _ a u g ( images ) ]
+8l o c a l _ c r o p s = [ lo ca l_ au g ( images ) for _ in range ( N _ L O C A L _ C R O P S ) ]
+9
+10# Teacher forward -- global views only , no gradient
+11with torch . no_grad () :
+12t e a c h e r _ o u t = [ teacher ( g ) for g in g l o b a l _ c r o p s ]
+13
+14# Student forward -- all views
+East West University8Lab Assignment 02CSE 475·Machine Learning & Computer Vision Dr. Md Rifat Ahmmad Rashid
+15s t u d e n t _ o u t = [ student ( v ) for v in g l o b a l _ c r o p s + l o c a l _ c r o p s ]
+16
+17# DINO cross - entropy loss with c ent er in g
+18loss = din o_ lo ss ( student_out , teacher_out ,
+19center , tau_s =0.1 , tau_t = t a u _ t _ s c h e d u l e [ epoch ])
+20
+21o pti mi ze r . ze ro_ gr ad ()
+22loss . backward ()
+23c l i p _ g r a d i e n t s ( student . p a r a m e t e r s () , max_norm =3.0)
+24o pti mi ze r . step ()
+25
+26# EMA teacher update + center update
+27e m a _ u p d a t e ( student_params , teacher_params , lam = l a m _ s c h e d u l e [ epoch ])
+28center = u p d a t e _ c e n t e r ( center , teacher_out , momentum =0.9)
+Report Section: DINO (≈400–500 words)
+Include: architecture diagram, multi-crop strategy explanation, loss curve, 5 attention map
+figures (original + overlay), and semantic analysis of attended regions.
+Task 4 — Evaluation: Linear Probing and k-NN(25 marks)
+Task 4: Downstream Evaluation (backbone frozen throughout)
+4a. Linear Probing
+1. Attachnn.Linear(embed_dim, num_classes)to the frozen backbone.
+2. Train with SGD (lr= 0.01, momentum= 0.9) for 50 epochs.
+3. Report: Top-1accuracy, Top-5accuracy(ifclasses≥10), confusionmatrix, andper-class
+F1-score.
+4. Repeat forbothBYOL and DINO backbones.
+4b. k-NN Classification
+1. Extractℓ 2-normalised features for all labelled training and test images.
+2. Evaluate fork∈ {1,5,10,20,50,200}using cosine similarity.
+3. Plot Accuracy vs.kfor BYOL and DINO on the same axes.
+4c. Comparison Table
+Populate the table below in your report (fill in your actual numbers):
+Method Backbone Epochs Lin. Probe Top-1 k-NN Acc. (k=20)
+Supervised CNN (A01) Best CNN (non-ResNeXt) — —% —
+Supervised ViT (A01) Best ViT — —% —
+BYOL (ours) Your chosen backbone 100 —% —%
+DINO (ours) Your chosen backbone 100 —% —%
+East West University9Lab Assignment 02CSE 475·Machine Learning & Computer Vision Dr. Md Rifat Ahmmad Rashid
+Report Section: Evaluation and Results (≈500–600 words)
+Include: comparison table, 2 confusion matrices, k-NN accuracy vs.kplot, per-class F1 bar
+chart, and a critical discussion of the gap between SSL and supervised accuracy on your
+specific dataset.
+Task 5 — Ablation, Discussion and Conclusion(15 marks)
+Task 5: Ablation Study (choose one option)
+1.Augmentation ablation: Remove one augmentation at a time (e.g. no Gaussian blur,
+no colour jitter) and measure the effect on linear probe accuracy for BYOL or DINO.
+2.EMA momentum ablation: Train BYOL withτ∈ {0.99,0.996,0.999}and compare
+linear probe accuracy.
+3.Label-fraction study: Vary labelled fraction for linear probing as{1%,5%,10%,50%}
+and plot accuracy vs. label fraction for both methods.
+Report Section: Discussion and Conclusion (≈400–500 words)
+Cover: ablation results (plot or table), reflection on BYOL vs. DINO on your dataset,
+limitations (compute, data size, instability), and a concise conclusion summarising all find-
+ings. Include at least one paragraph on future directions (DINOv2, MAE, domain-specific
+fine-tuning).
+East West University10Lab Assignment 02CSE 475·Machine Learning & Computer Vision Dr. Md Rifat Ahmmad Rashid
+Kaggle Notebook Structure
+TWO Notebooks Required
+Students must submitexactly two (2) separate Kaggle notebooksfor this assignment
+— one forBYOLand one forDINO. Both notebooks must be committed and made public
+on Kaggle before the deadline. Submitting only one notebook will result inzero marks
+for the missing model.
+Notebook 1 — BYOL
+This notebook coversTask 1 (shared EDA), Task 2 (BYOL pre-training), Task 4a–b
+(BYOL evaluation), and Task 5 (ablation).
+Required Section Structure
+1.[Markdown] Group Information(mandatory first cell — see template below)
+2.[Code] Global Configuration— all hyperparameters, backbone choice, random seed,
+paths
+3.[Code/MD] Setup and Imports
+4.[Code/MD] Task 1 — Dataset EDA and Augmentation Visualisation
+5.[Code/MD] Task 2 — BYOL: Model Definition(online network, target network,
+projector, predictor)
+6.[Code/MD] Task 2 — BYOL: Pre-Training Loop(unlabelled pool only; no labels
+used)
+7.[Code/MD] Task 2 — BYOL: Training Curve(epoch vs. loss plot)
+8.[Code/MD] Task 4 — Linear Probing with BYOL Backbone
+9.[Code/MD] Task 4 — k-NN Evaluation with BYOL Backbone
+10.[Code/MD] Task 5 — Ablation Study
+11.[MD] Conclusion
+12.[MD] References
+Notebook 1 Naming Convention
+CSE 475 - Assignment 02 - BYOL - Group <ID>
+Notebook 2 — DINO
+This notebook coversTask 1 (shared EDA), Task 3 (DINO pre-training), Task 4a–b
+(DINO evaluation), and the comparison table (Task 4c).
+East West University11Lab Assignment 02CSE 475·Machine Learning & Computer Vision Dr. Md Rifat Ahmmad Rashid
+Required Section Structure
+1.[Markdown] Group Information(mandatory first cell — same template)
+2.[Code] Global Configuration— all hyperparameters, backbone choice, random seed,
+paths
+3.[Code/MD] Setup and Imports
+4.[Code/MD] Task 1 — Dataset EDA and Augmentation Visualisation(may reuse
+output from Notebook 1; must still appear here)
+5.[Code/MD] Task 3 — DINO: Model Definition(student network, teacher network,
+projection head, multi-crop)
+6.[Code/MD] Task 3 — DINO: Pre-Training Loop(unlabelled pool only; no labels
+used)
+7.[Code/MD] Task 3 — DINO: Training Curve(epoch vs. loss plot)
+8.[Code/MD] Task 3 — DINO: Attention Map Visualisation(at least 5 test images
+with self-attention overlay)
+9.[Code/MD] Task 4 — Linear Probing with DINO Backbone
+10.[Code/MD] Task 4 — k-NN Evaluation with DINO Backbone
+11.[Code/MD] Task 4 — Full Comparison Table(BYOL vs. DINO vs. Assignment 01
+supervised baselines)
+12.[MD] Conclusion
+13.[MD] References
+Notebook 2 Naming Convention
+CSE 475 - Assignment 02 - DINO - Group <ID>
+Mandatory Group Information Cell (Both Notebooks)
+Thevery first cellofeachnotebook must be a Markdown cell containing the following table.
+TheNotebook Typefield must reflect which notebook it is.
+# CSE 475 - Assignment 02
+## Group Information
+| Field | Details |
+|----------------------------|----------------------------------------------|
+| Group ID | Group XX |
+| Student 1 Name | Full Name |
+| Student 1 ID | 20XX-X-XX-XXX |
+| Student 2 Name | Full Name (if applicable) |
+| Student 2 ID | 20XX-X-XX-XXX (if applicable) |
+| Notebook Type | BYOL Notebook / DINO Notebook |
+| Backbone Used | e.g. EfficientNet-B3 (NOT ResNeXt) |
+| Assignment 01 Best Acc | e.g. 87.3 % (EfficientNet-B3, 50 epochs) |
+| Dataset Name (Kaggle) | /kaggle/input/<your-dataset-name>/ |
+| Dataset Source | e.g. Oxford-IIIT Pet Dataset |
+East West University12Lab Assignment 02CSE 475·Machine Learning & Computer Vision Dr. Md Rifat Ahmmad Rashid
+| Dataset Source Link | https://... |
+| Submission Date | DD Month 2026 |
+Summary of Submission Requirements
+Item Notebook Name Contents Marks
+Notebook 1 ...BYOL - Group XX Tasks 1, 2, 4 (BYOL), 5 30
+Notebook 2 ...DINO - Group XX Tasks 1, 3, 4 (DINO + table)25
+PDF Report CSE475_A02_GroupXX_Report.pdf All tasks written up 45
+Grand Total 100
+IMPORTANT NOTE
+•Both notebooks must becommitted and publicon Kaggle before the deadline. Share
+both URLs via Google Classroom.
+•Each notebook must runend-to-end without errors. ClickRun Allbefore commit-
+ting.
+•Notebooks named incorrectly will receivezero marksfor the execution component.
+East West University13Lab Assignment 02CSE 475·Machine Learning & Computer Vision Dr. Md Rifat Ahmmad Rashid
+Written Report Structure
+Submit aPDF report (minimum 15 pages)with the sections below. Use the headings
+exactly as listed.
+# Section Expected Content
+1 Title Page Assignment title, course, group info, backbone chosen,
+date
+2 Table of Contents Auto-generated
+3 Introduction Motivation for SSL; scope of BYOL and DINO; research
+questions
+4 Dataset and Preprocessing Dataset overview, EDA, split rationale, augmentation
+strategy
+5 BYOL Implementation Architecture, training config, loss curve, convergence
+analysis
+6 DINO Implementation Architecture, multi-crop strategy, loss curve, attention
+maps
+7 Evaluation and Results Linear probe, k-NN, comparison table, per-class analysis
+8 Discussion and Ablation Ablation results, reflection, limitations
+9 Conclusion and Future Work Summary of findings; directions for DINOv2, MAE etc.
+10 References IEEE format, minimum 8 citations
+Formatting Requirements
+•Font: Times New Roman or equivalent serif, 11 pt.
+•Margins: 2.5 cm on all sides.
+•All figures must have captions and be referenced in the text.
+•All tables must have titles.
+•Equations must be numbered.
+•File name:CSE475_A02_Group<ID>_Report.pdf
+East West University14Lab Assignment 02CSE 475·Machine Learning & Computer Vision Dr. Md Rifat Ahmmad Rashid
+Marks Distribution
+Task Component Notebook Report
+1 Dataset Preparation and EDA 5 5
+2 BYOL Pre-Training 15 10
+3 DINO Pre-Training 15 10
+4 Evaluation (Linear Probe + k-NN) 15 10
+5 Ablation, Discussion and Conclusion 5 10
+Total 55 45
+Grand Total 100 Marks
+Grading Rubric
+Range Descriptor
+90–100 All tasks complete; insightful analysis; ablation well-designed; report is professional
+with all figures, equations, and references.
+75–89 All tasks complete; metrics correct; discussion present but lacking depth; minor
+formatting issues.
+60–74 Most tasks complete; evaluation partially done; report missing figures or critical
+analysis.
+45–59 At least one major task missing or incorrect; report is minimal.
+0–44 Notebook does not run; major tasks absent; plagiarism detected.
+Submission Guidelines
+What to Submit
+1.Kaggle notebook URL— the committed, public notebook shared with the instructor via
+Google Classroom.
+2.PDF report— submitted to Google Classroom before the deadline.
+Deadline Policy
+IMPORTANT NOTE
+•Late penalty: 10 marks deducted per 24-hour period after the deadline.
+•Submissions more than 72 hours late willnotbe accepted.
+•Extensions must be requested at least 48 hours in advance by email.
+East West University15Lab Assignment 02CSE 475·Machine Learning & Computer Vision Dr. Md Rifat Ahmmad Rashid
+Academic Integrity
+Academic Integrity Policy
+•You may consult open-source SSL libraries (e.g.solo-learn,lightly) as reference, but
+all code must be written and adapted by your groupfor your specific dataset
+and backbone.
+•Copying code from other groups without attribution is academic dishonesty and results
+inzero marks.
+•AI-generated report text used without substantive modification is prohibited.
+•All references must be cited in IEEE format.
+Mandatory References
+Your report must cite at least 8 references in IEEE format. The following are mandatory:
+1. J.-B. Grill et al., “Bootstrap Your Own Latent: A New Approach to Self-Supervised Learn-
+ing,”NeurIPS 2020.
+2. M. Caron et al., “Emerging Properties in Self-Supervised Vision Transformers,”ICCV 2021.
+3. M. Oquab et al., “DINOv2: Learning Robust Visual Features without Supervision,”TMLR
+2024.
+4. T. Chen, S. Kornblith, M. Norouzi, G. Hinton, “A Simple Framework for Contrastive Learn-
+ing of Visual Representations,”ICML 2020.
+5. K. He, X. Chen, S. Xie, Y. Li, P. Dollar, R. Girshick, “Masked Autoencoders Are Scalable
+Vision Learners,”CVPR 2022.
+6. A. Dosovitskiy et al., “An Image is Worth 16x16 Words: Transformers for Image Recognition
+at Scale,”ICLR 2021.
+7.Citation for your Assignment 01 dataset— full bibliographic details of the dataset you used.
+8.One additional recent SSL paperfrom CVPR, ICCV, or NeurIPS 2022–2026 of your choice.
+Good Luck!
+This assignment brings you to the frontier of modern computer vision. Self-supervised
+learning is the technique behind the most powerful vision models deployed today at Meta
+AI, Google DeepMind, and beyond.
+Take the time tounderstandeach component, visualise intermediate outputs, and reflect
+critically on what your results reveal about your dataset.
+Dr. Md Rifat Ahmmad Rashid
+Associate Professor, CSE — East West University
+CSE 475: Machine Learning & Computer Vision
+East West University16Lab Assignment 02
